@@ -2,6 +2,8 @@
 
 Minimal ASP.NET Core API that serializes **writes** to `Instance` rows in-process, gives the HTTP controller priority over three background workers, and leaves **GET** endpoints unlocked.
 
+See [HOW_TO_USE.md](HOW_TO_USE.md) for integration and usage examples.
+
 ### How it works
 
 | Caller | Behavior |
