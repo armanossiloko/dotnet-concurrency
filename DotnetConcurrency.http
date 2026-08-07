@@ -1,0 +1,27 @@
+@DotnetConcurrency_HostAddress = http://localhost:5173
+
+### List instances (no write lock)
+GET {{DotnetConcurrency_HostAddress}}/api/instance
+
+### Get one instance (no write lock)
+GET {{DotnetConcurrency_HostAddress}}/api/instance/11111111-1111-1111-1111-111111111111
+
+### Create instance
+POST {{DotnetConcurrency_HostAddress}}/api/instance
+Content-Type: application/json
+
+{
+  "name": "delta"
+}
+
+### Update instance (awaits write lock; cancels workers on this id)
+PUT {{DotnetConcurrency_HostAddress}}/api/instance/11111111-1111-1111-1111-111111111111
+Content-Type: application/json
+
+{
+  "name": "alpha",
+  "status": "UserUpdated"
+}
+
+### Hold write lock for 8s — watch worker logs skip this id; GETs still work
+POST {{DotnetConcurrency_HostAddress}}/api/instance/11111111-1111-1111-1111-111111111111/hold-lock?seconds=8
