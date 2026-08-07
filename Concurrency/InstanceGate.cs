@@ -4,14 +4,36 @@ namespace DotnetConcurrency.Concurrency;
 
 /// <summary>
 /// Coordinates writes to one Instance inside this process.
-/// A user claim prevents new workers from starting on that key and cancels
+/// A controller claim prevents new workers from starting on that key and cancels
 /// the worker, if any, which currently owns the lease. Reads do not use it.
 /// </summary>
 public sealed class InstanceGate
 {
     private readonly ConcurrentDictionary<Guid, KeyState> _keys = new();
 
-    public async Task<IAsyncDisposable> AcquireForUserAsync(Guid instanceId, CancellationToken ct)
+    /// <summary>
+    /// Acquires exclusive access for a pending Instance update. Controllers wait
+    /// and claim priority; workers wait only briefly and receive null when the
+    /// instance should be requeued.
+    /// </summary>
+    public Task<UpdateLease?> AcquireForUpdateAsync(
+        Guid instanceId,
+        UpdateRequester requester,
+        CancellationToken ct,
+        TimeSpan? workerTimeout = null) =>
+        requester switch
+        {
+            UpdateRequester.Controller => AcquireControllerUpdateAsync(instanceId, ct),
+            UpdateRequester.Worker => TryAcquireWorkerUpdateAsync(
+                instanceId,
+                workerTimeout ?? TimeSpan.FromMilliseconds(50),
+                ct),
+            _ => throw new ArgumentOutOfRangeException(nameof(requester), requester, null)
+        };
+
+    private async Task<UpdateLease?> AcquireControllerUpdateAsync(
+        Guid instanceId,
+        CancellationToken ct)
     {
         var key = GetKey(instanceId);
 
@@ -24,7 +46,7 @@ public sealed class InstanceGate
         try
         {
             await key.Mutex.WaitAsync(ct).ConfigureAwait(false);
-            return new UserLease(key);
+            return new UpdateLease(key, workerCancellation: null);
         }
         catch
         {
@@ -38,7 +60,7 @@ public sealed class InstanceGate
     /// A user claim is checked both before and after waiting, so a worker cannot
     /// slip in ahead of a newly-arrived controller request.
     /// </summary>
-    public async Task<WorkerLease?> TryAcquireForWorkerAsync(
+    private async Task<UpdateLease?> TryAcquireWorkerUpdateAsync(
         Guid instanceId,
         TimeSpan timeout,
         CancellationToken ct)
@@ -68,7 +90,7 @@ public sealed class InstanceGate
 
             var workerCancellation = new CancellationTokenSource();
             key.ActiveWorker = workerCancellation;
-            return new WorkerLease(key, workerCancellation);
+            return new UpdateLease(key, workerCancellation);
         }
     }
 
@@ -91,19 +113,25 @@ public sealed class InstanceGate
         public CancellationTokenSource? ActiveWorker { get; set; }
     }
 
-    public sealed class WorkerLease : IAsyncDisposable
+    /// <summary>
+    /// Represents exclusive access to an Instance for an update. Worker leases
+    /// carry a cancellation token that is cancelled when a controller claims
+    /// priority for the same Instance.
+    /// </summary>
+    public sealed class UpdateLease : IAsyncDisposable
     {
         private readonly KeyState _key;
-        private readonly CancellationTokenSource _cancellation;
+        private readonly CancellationTokenSource? _workerCancellation;
         private int _disposed;
 
-        internal WorkerLease(KeyState key, CancellationTokenSource cancellation)
+        internal UpdateLease(KeyState key, CancellationTokenSource? workerCancellation)
         {
             _key = key;
-            _cancellation = cancellation;
+            _workerCancellation = workerCancellation;
         }
 
-        public CancellationToken CancellationToken => _cancellation.Token;
+        public CancellationToken CancellationToken =>
+            _workerCancellation?.Token ?? CancellationToken.None;
 
         public ValueTask DisposeAsync()
         {
@@ -112,33 +140,30 @@ public sealed class InstanceGate
                 return ValueTask.CompletedTask;
             }
 
+            if (_workerCancellation is null)
+            {
+                _key.Mutex.Release();
+                ReleaseUserClaim(_key);
+                return ValueTask.CompletedTask;
+            }
+
             lock (_key.Sync)
             {
-                if (ReferenceEquals(_key.ActiveWorker, _cancellation))
+                if (ReferenceEquals(_key.ActiveWorker, _workerCancellation))
                 {
                     _key.ActiveWorker = null;
                 }
             }
 
-            _cancellation.Dispose();
+            _workerCancellation.Dispose();
             _key.Mutex.Release();
             return ValueTask.CompletedTask;
         }
     }
+}
 
-    private sealed class UserLease(KeyState key) : IAsyncDisposable
-    {
-        private int _disposed;
-
-        public ValueTask DisposeAsync()
-        {
-            if (Interlocked.Exchange(ref _disposed, 1) == 0)
-            {
-                key.Mutex.Release();
-                ReleaseUserClaim(key);
-            }
-
-            return ValueTask.CompletedTask;
-        }
-    }
+public enum UpdateRequester
+{
+    Controller,
+    Worker
 }

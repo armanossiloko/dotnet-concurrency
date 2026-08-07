@@ -67,7 +67,10 @@ public class InstanceController(
         [FromBody] UpdateInstanceRequest request,
         CancellationToken ct)
     {
-        await using var _ = await gate.AcquireForUserAsync(id, ct);
+        await using var _ = (await gate.AcquireForUpdateAsync(
+            id,
+            UpdateRequester.Controller,
+            ct))!;
 
         var entity = await db.Instances.FirstOrDefaultAsync(x => x.Id == id, ct);
         if (entity is null)
@@ -102,7 +105,10 @@ public class InstanceController(
     {
         seconds = Math.Clamp(seconds, 1, 30);
 
-        await using var _ = await gate.AcquireForUserAsync(id, ct);
+        await using var _ = (await gate.AcquireForUpdateAsync(
+            id,
+            UpdateRequester.Controller,
+            ct))!;
 
         var entity = await db.Instances.FirstOrDefaultAsync(x => x.Id == id, ct);
         if (entity is null)

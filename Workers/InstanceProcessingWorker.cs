@@ -65,7 +65,11 @@ public abstract class InstanceProcessingWorker(
 
         while (pendingIds.TryDequeue(out var id) && !stoppingToken.IsCancellationRequested)
         {
-            await using var lease = await gate.TryAcquireForWorkerAsync(id, LockTimeout, stoppingToken);
+            await using var lease = await gate.AcquireForUpdateAsync(
+                id,
+                UpdateRequester.Worker,
+                stoppingToken,
+                LockTimeout);
             if (lease is null)
             {
                 // Put this id at the back so another instance that is available
