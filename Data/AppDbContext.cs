@@ -19,7 +19,21 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
         });
     }
 
-    public override Task<int> SaveChangesAsync(CancellationToken cancellationToken = default)
+    public override int SaveChanges(bool acceptAllChangesOnSuccess)
+    {
+        ApplyInstanceMetadata();
+        return base.SaveChanges(acceptAllChangesOnSuccess);
+    }
+
+    public override Task<int> SaveChangesAsync(
+        bool acceptAllChangesOnSuccess,
+        CancellationToken cancellationToken = default)
+    {
+        ApplyInstanceMetadata();
+        return base.SaveChangesAsync(acceptAllChangesOnSuccess, cancellationToken);
+    }
+
+    private void ApplyInstanceMetadata()
     {
         foreach (var entry in ChangeTracker.Entries<Instance>())
         {
@@ -32,7 +46,5 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
                 }
             }
         }
-
-        return base.SaveChangesAsync(cancellationToken);
     }
 }

@@ -2,6 +2,7 @@ using DotnetConcurrency.Concurrency;
 using DotnetConcurrency.Data;
 using DotnetConcurrency.Entities;
 using DotnetConcurrency.Models;
+using DotnetConcurrency.Workers;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 
@@ -12,6 +13,8 @@ namespace DotnetConcurrency.Controllers;
 public class InstanceController(
     AppDbContext db,
     InstanceGate gate,
+    InstanceUpdateQueue updateQueue,
+    IHostApplicationLifetime applicationLifetime,
     ILogger<InstanceController> logger) : ControllerBase
 {
     /// <summary>
@@ -48,8 +51,7 @@ public class InstanceController(
         {
             Id = Guid.NewGuid(),
             Name = request.Name.Trim(),
-            Status = "Created",
-            UpdatedAt = DateTimeOffset.UtcNow
+            Status = "Created"
         };
 
         db.Instances.Add(entity);
@@ -59,7 +61,8 @@ public class InstanceController(
     }
 
     /// <summary>
-    /// User write path: cancels workers on this key, then awaits the exclusive write lock.
+    /// Priority update path. If the Instance is busy, the operation is queued,
+    /// new background work is blocked, and the request returns 202 immediately.
     /// </summary>
     [HttpPut("{id:guid}")]
     public async Task<ActionResult<InstanceDto>> Update(
@@ -67,10 +70,22 @@ public class InstanceController(
         [FromBody] UpdateInstanceRequest request,
         CancellationToken ct)
     {
-        await using var _ = (await gate.AcquireForUpdateAsync(
+        var name = request.Name.Trim();
+        var status = request.Status.Trim();
+        var pendingLease = gate.AcquireForUpdateAsync(
             id,
-            UpdateRequester.Controller,
-            ct))!;
+            applicationLifetime.ApplicationStopping);
+
+        if (!pendingLease.IsCompleted)
+        {
+            updateQueue.Enqueue(id, name, status, pendingLease);
+            return AcceptedAtAction(
+                nameof(GetById),
+                new { id },
+                new { id, state = "Queued" });
+        }
+
+        await using var _ = await pendingLease;
 
         var entity = await db.Instances.FirstOrDefaultAsync(x => x.Id == id, ct);
         if (entity is null)
@@ -80,10 +95,9 @@ public class InstanceController(
 
         logger.LogInformation("User updating instance {InstanceId}", id);
 
-        entity.Name = request.Name.Trim();
-        entity.Status = request.Status.Trim();
+        entity.Name = name;
+        entity.Status = status;
         entity.LastProcessedBy = "InstanceController";
-        entity.UpdatedAt = DateTimeOffset.UtcNow;
 
         // Simulate a bit of work so you can observe workers skipping this id.
         await Task.Delay(TimeSpan.FromMilliseconds(800), ct);
@@ -105,10 +119,7 @@ public class InstanceController(
     {
         seconds = Math.Clamp(seconds, 1, 30);
 
-        await using var _ = (await gate.AcquireForUpdateAsync(
-            id,
-            UpdateRequester.Controller,
-            ct))!;
+        await using var _ = await gate.AcquireForUpdateAsync(id, ct);
 
         var entity = await db.Instances.FirstOrDefaultAsync(x => x.Id == id, ct);
         if (entity is null)
@@ -123,7 +134,6 @@ public class InstanceController(
 
         entity.Status = $"UserHold({seconds}s)";
         entity.LastProcessedBy = "InstanceController/HoldLock";
-        entity.UpdatedAt = DateTimeOffset.UtcNow;
 
         await Task.Delay(TimeSpan.FromSeconds(seconds), ct);
         await db.SaveChangesAsync(ct);

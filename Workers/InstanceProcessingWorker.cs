@@ -1,5 +1,6 @@
 using DotnetConcurrency.Concurrency;
 using DotnetConcurrency.Data;
+using DotnetConcurrency.Infrastructure;
 using Microsoft.EntityFrameworkCore;
 
 namespace DotnetConcurrency.Workers;
@@ -65,11 +66,10 @@ public abstract class InstanceProcessingWorker(
 
         while (pendingIds.TryDequeue(out var id) && !stoppingToken.IsCancellationRequested)
         {
-            await using var lease = await gate.AcquireForUpdateAsync(
+            await using var lease = await gate.TryAcquireForUpdateAsync(
                 id,
-                UpdateRequester.Worker,
-                stoppingToken,
-                LockTimeout);
+                LockTimeout,
+                stoppingToken);
             if (lease is null)
             {
                 // Put this id at the back so another instance that is available
@@ -78,7 +78,7 @@ public abstract class InstanceProcessingWorker(
                 consecutiveDeferrals++;
 
                 logger.LogInformation(
-                    "{Worker} requeued {InstanceId} (write lock busy — user priority)",
+                    "{Worker} requeued {InstanceId} (update busy or priority pending)",
                     WorkerName,
                     id);
 
@@ -100,31 +100,16 @@ public abstract class InstanceProcessingWorker(
 
             await using var writeScope = scopeFactory.CreateAsyncScope();
             var writeDb = writeScope.ServiceProvider.GetRequiredService<AppDbContext>();
-            using var linked = CancellationTokenSource.CreateLinkedTokenSource(
-                stoppingToken,
-                lease.CancellationToken);
 
             try
             {
-                await ProcessInstanceAsync(writeDb, id, linked.Token);
+                await ProcessInstanceAsync(writeDb, id, stoppingToken);
             }
-            catch (OperationCanceledException) when (!stoppingToken.IsCancellationRequested)
-            {
-                logger.LogWarning(
-                    "{Worker} yielded {InstanceId} after user requested the write lock",
-                    WorkerName,
-                    id);
-            }
-            catch (DbUpdateConcurrencyException ex)
+            catch (Exception ex) when (TransientDatabaseErrors.IsRetryable(ex))
             {
                 // The gate prevents this inside one process. This is a safety net for
-                // writes made outside this process; retry on the next worker cycle.
-                logger.LogWarning(ex, "{Worker} deferred {InstanceId} after an external write conflict", WorkerName, id);
-            }
-            catch (DbUpdateException ex)
-            {
-                // Do not let a transient database failure end the hosted service.
-                logger.LogWarning(ex, "{Worker} deferred {InstanceId} after a database write failure", WorkerName, id);
+                // transient failures or writes made outside it. Retry next cycle.
+                logger.LogWarning(ex, "{Worker} deferred {InstanceId} after a transient database failure", WorkerName, id);
             }
         }
     }
@@ -139,12 +124,12 @@ public abstract class InstanceProcessingWorker(
 
         logger.LogInformation("{Worker} processing {InstanceId} ({Name})", WorkerName, id, entity.Name);
 
-        // Long enough that a concurrent PUT / hold-lock can cancel us mid-work.
+        // Long enough to demonstrate that a priority update waits for this
+        // already-running operation rather than cancelling it.
         await Task.Delay(SimulatedWork, ct);
 
         entity.Status = $"ProcessedBy:{WorkerName}";
         entity.LastProcessedBy = WorkerName;
-        entity.UpdatedAt = DateTimeOffset.UtcNow;
 
         await db.SaveChangesAsync(ct);
 

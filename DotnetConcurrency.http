@@ -14,7 +14,7 @@ Content-Type: application/json
   "name": "delta"
 }
 
-### Update instance (awaits write lock; cancels workers on this id)
+### Update instance (returns 202 and queues when another update is active)
 PUT {{DotnetConcurrency_HostAddress}}/api/instance/11111111-1111-1111-1111-111111111111
 Content-Type: application/json
 

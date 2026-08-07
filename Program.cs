@@ -8,7 +8,7 @@ using Microsoft.EntityFrameworkCore;
 var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddControllers(options =>
-    options.Filters.Add<DatabaseWriteExceptionFilter>());
+    options.Filters.Add<TransientDatabaseExceptionFilter>());
 builder.Services.AddOpenApi();
 
 builder.Services.AddDbContext<AppDbContext>(options =>
@@ -17,6 +17,9 @@ builder.Services.AddDbContext<AppDbContext>(options =>
         npgsql => npgsql.EnableRetryOnFailure(maxRetryCount: 3)));
 
 builder.Services.AddSingleton<InstanceGate>();
+builder.Services.AddSingleton<InstanceUpdateQueue>();
+builder.Services.AddHostedService(
+    services => services.GetRequiredService<InstanceUpdateQueue>());
 
 builder.Services.AddHostedService<CleanupWorker>();
 builder.Services.AddHostedService<MetricsWorker>();

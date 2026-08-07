@@ -1,3 +1,5 @@
+using System.ComponentModel.DataAnnotations;
+
 namespace DotnetConcurrency.Models;
 
 public record InstanceDto(
@@ -7,6 +9,9 @@ public record InstanceDto(
     string? LastProcessedBy,
     DateTimeOffset UpdatedAt);
 
-public record CreateInstanceRequest(string Name);
+public record CreateInstanceRequest(
+    [Required, StringLength(200, MinimumLength = 1)] string Name);
 
-public record UpdateInstanceRequest(string Name, string Status);
+public record UpdateInstanceRequest(
+    [Required, StringLength(200, MinimumLength = 1)] string Name,
+    [Required, StringLength(100, MinimumLength = 1)] string Status);

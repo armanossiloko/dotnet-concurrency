@@ -10,7 +10,7 @@ public class Instance
 
     public string? LastProcessedBy { get; set; }
 
-    public DateTimeOffset UpdatedAt { get; set; } = DateTimeOffset.UtcNow;
+    public DateTimeOffset UpdatedAt { get; set; }
 
     /// <summary>
     /// EF concurrency token — safety net if in-process serialization is bypassed.
